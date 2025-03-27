@@ -76,10 +76,10 @@ class ChatClient:
         self.is_connected = False
 
         self.nickname = None
-        self.nick()
+        self.ask_nick()
         
     # Ask user for a nickname
-    def nick(self):
+    def ask_nick(self):
         while not self.nickname:
             number = random.randint(1, 100)
             default_nick = f'Guest{number}'
@@ -91,7 +91,7 @@ class ChatClient:
             return
         
         # Ask the user for a nickname if not already set
-        self.nick()
+        self.ask_nick()
         
         if not self.client:
             self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
