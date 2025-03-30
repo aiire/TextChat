@@ -1,27 +1,51 @@
 import socket
 import threading # Multi-threading
 import tkinter as tk
-from tkinter import scrolledtext, simpledialog, messagebox
+from tkinter import scrolledtext, simpledialog, messagebox, ttk
 import json
 import errno
+from dataclasses import dataclass
 
 from common import *
+
+def get_user_id(address, nickname):
+    combined_hash = hash(address[0]) ^ hash(nickname)
+    return f'{combined_hash:04x}'
+
+@dataclass
+class User:
+    nickname: str
+    client: socket.socket
+    address: tuple[str, int]
+    messages_sent: int = 0
+
+    # A users unique identifier determined by their nickname and IP address
+    @property
+    def id(self):
+        # Combine the hashes of the nickname and the IP
+        return get_user_id(self.address, self.nickname)
+    
+    @property
+    def full_name(self):
+        return f'{self.nickname} ({self.id})'
+
 
 class ChatServer:
     def __init__(self, master: tk.Tk):
         self.master = master # Store the root widget
         self.master.title('Chat Server')  # Set the title of the GUI window to 'Chat Server'
 
-        self.main_frame = tk.Frame(master)
-        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_frame = tk.Frame(master)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        self.left_frame = tk.Frame(self.main_frame)
-        self.left_frame.pack(side=tk.LEFT, anchor='n', padx=(0, 10))  # Align to top-left
+        left_frame = tk.Frame(main_frame)
+        left_frame.pack(side=tk.LEFT, anchor='n')  # Align to top-left
 
-        self.right_frame = tk.Frame(self.main_frame)
-        self.right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)  # Chat expands to fill space
+        right_frame = tk.Frame(main_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)  # Chat expands to fill space
 
-        self.host_frame = tk.Frame(self.left_frame)
+        # Allow the user to specify the chat room hostname
+        self.host_frame = tk.Frame(left_frame)
         self.host_frame.pack(anchor='w', pady=(0, 10))
         self.host_label = tk.Label(self.host_frame, text='Host')
         self.host_label.pack(side=tk.LEFT)
@@ -29,45 +53,72 @@ class ChatServer:
         self.host_entry = tk.Entry(self.host_frame, textvariable=self.host_var, width=20)
         self.host_entry.pack(side=tk.LEFT, padx=(5, 0))  # Spacing between label and entry
 
-        # Row 2: Port Label and Entry
-        self.port_frame = tk.Frame(self.left_frame)
-        self.port_frame.pack(anchor='w', pady=(0, 10))
-        self.port_label = tk.Label(self.port_frame, text='Port')
+        # Allow the user to enter the port 
+        port_frame = tk.Frame(left_frame)
+        port_frame.pack(anchor='w', pady=(0, 10))
+        self.port_label = tk.Label(port_frame, text='Port')
         self.port_label.pack(side=tk.LEFT)
         self.port_var = tk.IntVar(master, value=DEFAULT_PORT)
-        self.port_entry = tk.Entry(self.port_frame, textvariable=self.port_var, width=20)
+        self.port_entry = tk.Entry(port_frame, textvariable=self.port_var, width=20)
         self.port_entry.pack(side=tk.LEFT, padx=(5, 0))
-
-        # Add a button to start the server (only when the server is not started)
-        self.start_button = tk.Button(self.left_frame, text='Start Server', command=self.start_server)
-        self.start_button.pack(anchor='w', pady=(0, 10))
         
-        # Add a button to stop the server (only when the server is running)
-        self.stop_button = tk.Button(self.left_frame, text='Stop Server', command=self.stop_server)
-        self.stop_button.pack(anchor='w', pady=(0, 10))
+        # Create a frame for the buttons to keep them on the same line
+        button_frame = tk.Frame(left_frame)
+        button_frame.pack(anchor='w', pady=(0, 10))  # Packs the frame in left_frame
+
+        # Add the Start Server button inside button_frame
+        self.start_button = tk.Button(button_frame, text='Start Server', command=self.start_server)
+        self.start_button.pack(side=tk.LEFT, padx=(0, 10))  # Left alignment with padding
+
+        # Add the Stop Server button inside button_frame
+        self.stop_button = tk.Button(button_frame, text='Stop Server', command=self.stop_server)
+        self.stop_button.pack(side=tk.LEFT)  # Left alignment next to start button
         self.stop_button.config(state=tk.DISABLED)
 
         # Listbox for connected users
-        self.user_list_label = tk.Label(self.left_frame, text='Connected Users')
+        # Create a frame for the listbox and scrollbar together
+        list_frame = tk.Frame(left_frame)
+        list_frame.pack(anchor='w', pady=(0, 10))
+
+        # Label remains above the list_frame
+        self.user_list_label = tk.Label(list_frame, text='Users Online')
         self.user_list_label.pack(anchor='w', pady=(0, 5))
-        self.user_listbox = tk.Listbox(self.left_frame, width=25, height=15)
-        self.user_listbox.pack(anchor='w', pady=(0, 10))
+
+        # Create the listbox inside the frame
+        self.user_listbox = tk.Listbox(list_frame, width=25, height=12)
+        self.user_listbox.pack(side=tk.LEFT, fill=tk.BOTH)
+
+        # Create and attach the scrollbar to the listbox within the same frame
+        scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.user_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Connect the listbox to the scrollbar
+        self.user_listbox.config(yscrollcommand=scrollbar.set)
+
+        # Added functionality for kicking disruptive users
+        self.kick_button = tk.Button(left_frame, text='Kick', command=self.kick_user)
+        self.kick_button.pack(side=tk.LEFT, padx=(0, 10))
+        self.kick_button.config(state=tk.DISABLED)
+
+        self.ban_button = tk.Button(left_frame, text='Ban', command=self.ban_user)
+        self.ban_button.pack(side=tk.LEFT)
+        self.ban_button.config(state=tk.DISABLED)
 
         # And add a button to stop the server
-        self.chat_area = scrolledtext.ScrolledText(self.right_frame, wrap=tk.NONE, state=tk.DISABLED, width=70, height=20)
+        self.chat_area = scrolledtext.ScrolledText(right_frame, wrap=tk.WORD, state=tk.DISABLED, width=60, height=20)
         self.chat_area.pack(fill=tk.BOTH, pady=(0, 10), expand=True)
 
         # Frame to hold the message entry and send button
-        self.message_frame = tk.Frame(self.right_frame)
+        self.message_frame = tk.Frame(right_frame)
         self.message_frame.pack(fill=tk.BOTH, pady=(0, 10))
         self.message_var = tk.StringVar(master)  # Changed from IntVar to StringVar for text input
         self.message_entry = tk.Entry(self.message_frame, textvariable=self.message_var, width=60)
         self.message_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.message_entry.config(state=tk.DISABLED)
-        self.message_entry.bind('<Return>', self.announce)
+        self.message_entry.bind('<Return>', self.send_message)
 
         # Send Button
-        self.send_button = tk.Button(self.message_frame, text='Send', command=self.announce)
+        self.send_button = tk.Button(self.message_frame, text='Send', command=self.send_message)
         self.send_button.pack(side=tk.RIGHT, padx=(5, 0))
         self.send_button.config(state=tk.DISABLED)
     
@@ -75,8 +126,16 @@ class ChatServer:
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_running = False
         
-        # List of clients and their respective usernames
+        # The list storing the connected users
         self.users: list[User] = []
+        self.bans = read_file('bans.json') # List of banned users
+
+    def is_user_banned(self, user_id):
+        return user_id in self.bans.keys()
+    
+    def is_nick_taken(self, nickname):
+        duplicate_nicks = [user.nickname for user in self.users if user.nickname == nickname]
+        return len(duplicate_nicks) > 0
 
     def accept_connections(self):
         while self.server_running:
@@ -84,45 +143,79 @@ class ChatServer:
                 client, address = self.server.accept()
                 # self.display_message(f'Connected to {address}')
                 
-                # Request and store the client's nickname
-                client.sendall('NICK'.encode())
-                nickname = client.recv(1024).decode()
+                # The client will (presumably) send a packet saying the user is requesting to join the chat room
+                initial_message = decode_packet(client.recv(1024))
+                
+                # The incoming data could not be parsed
+                if not initial_message:
+                    continue
+
+                # If the client is actively requesting to connect...
+                if initial_message['type'] == 'user_connected':
+                    nickname = initial_message['nick']
+                    error_response = {'type': 'connection_error', 'status': 'failed'}
+                    user_id = get_user_id(address, nickname)
+                    if self.is_user_banned(user_id):
+                        error_response['status'] = 'banned'
+                        error_response['reason'] = self.bans[user_id]['reason']
+                        client.sendall(encode_packet(error_response))
+                        continue
+                    elif self.is_nick_taken(nickname):
+                        error_response['status'] = 'nick_taken'
+                        error_response['reason'] = f'The nick "{nickname}" is already in use.'
+                        client.sendall(encode_packet(error_response))
+                        continue
+                    
+                    # Send an acknowledgement to the user to let them know connection was successful
+                    client.sendall(encode_packet({'type': 'connection_ack', 'status': 'success', 'your_id': user_id}))
+
+                # Most likely the client sent an unexpected packet
+                else:
+                    continue
+                
+                # Add the user to the chat room
                 user = self.add_user(client, nickname, address)
 
                 # Start a thread to handle the new client
                 thread = threading.Thread(target=self.handle_client, args=(user,))
                 thread.start()
             except socket.timeout as e:
-                self.display_message('Client timed out.')
+                self.display_message('Timed out.')
                 continue  # Timeout occurred, check the loop condition again
             except OSError as e:
                 # Socket was likely closed, exit the loop
                 break
     
+    def user_table(self):
+        return [{'nick': user.nickname, 'id': user.id} for user in self.users]
+    
+    # Add a user to the chat room
     def add_user(self, client: socket.socket, nickname: str, address: tuple[str, int]):
         user = User(nickname, client, address)
         self.users.append(user)
         self.user_listbox.insert(tk.END, user.nickname)
 
         # Display a message that the user has joined
-        self.display_message(f'{nickname} has joined the chat.')
+        self.display_message(f'{nickname} joined the chat.')
 
         # Notify others that a new user has joined
-        self.broadcast(encode_packet({'type': 'user_connected', 'user': nickname, 'user_list': [user.nickname for user in self.users]}))
-
+        self.broadcast(encode_packet({'type': 'user_joined', 'user': nickname, 'users': self.user_table()}))
         return user
 
+    # Remove a user from the chat room
     def remove_user(self, user: User):
+        # I have no idea who you are
         if user not in self.users:
             return
+        
         self.users.remove(user)
-        user.socket.close()
+        user.client.close()
 
         # Display a message that the user left
-        self.display_message(f'{user.nickname} has left the chat.')
+        self.display_message(f'{user.nickname} left the chat.')
         
         # Notify others that a user has left
-        self.broadcast(encode_packet({'type': 'user_disconnected', 'user': user.nickname, 'user_list': [user.nickname for user in self.users]}))
+        self.broadcast(encode_packet({'type': 'user_leave', 'user': user.nickname, 'users': self.user_table()}))
 
         # Remove their name from the user list
         try:
@@ -131,24 +224,56 @@ class ChatServer:
         except ValueError:
             pass  # for wtv reason this user's nickname is not listed
 
+    def kick_user(self):
+        indices = self.user_listbox.curselection() # Get whatever user nick is selected
+        if not indices:
+            return
+        
+        for index in indices:
+            target_user = self.users[index]
+            
+            self.display_message(f'Kicked {target_user.nickname}.')
+            self.send_packet(target_user, encode_packet({'type': 'user_kicked', 'reason': 'You were kicked by an admin.'}))
+            self.remove_user(target_user)
+
+    def ban_user(self):
+        indices = self.user_listbox.curselection() # Get whatever user nick is selected
+        if not indices:
+            return
+        
+        for index in indices:
+            target_user: User = self.users[index]
+            
+            self.display_message(f'Banned user {target_user.full_name}.')
+            ban_reason = 'You were banned by an admin.'
+            self.send_packet(target_user, encode_packet({'type': 'user_banned', 'reason': ban_reason}))
+            self.bans[target_user.id] = {'reason': ban_reason}
+            write_file('bans.json', self.bans)
+            self.remove_user(target_user)
+
+
     # Handles incoming messages from a client. Runs on its own work thread for each client
     def handle_client(self, user: User):
         while True:
             try:
-                packet = user.socket.recv(1024)  # Receive message from the client
-                packet_data = json.loads(packet.decode()) # Parse the incoming JSON data
-                print(f'Received: {packet_data}')
-                packet_type = packet_data['type']
+                # Receive message from the client and parse it as JSON data
+                packet = decode_packet(user.client.recv(1024)) 
+                packet_type = packet['type']
+
+                print(f'Received: {packet}')
+
+                # This user sent a message
                 if packet_type == 'user_message':
                     # Print the received message to the server chat window
-                    sender = packet_data['sender']
-                    message = packet_data['content']
-                    self.display_message(f'({sender}) {message}')
+                    sender = packet['sender']['nick']
+                    content = packet['content']
+                    self.display_message(f'<{sender}> {content}')
 
-                    # Echo the received data to other clients
-                    self.broadcast(packet)
+                    # Echo the received message to other clients
+                    self.broadcast(encode_packet(packet))
+                
+                # User wants to disconnect from the server
                 elif packet_type == 'user_disconnected':
-                    # User wants to disconnect from the server
                     self.remove_user(user)
                     break
 
@@ -166,7 +291,7 @@ class ChatServer:
 
     def send_packet(self, recipient: User, packet: bytes):
         # self.display_message(packet.decode())
-        recipient.socket.sendall(packet)
+        recipient.client.sendall(packet)
 
     # Name speaks for itself
     def start_server(self):
@@ -202,6 +327,10 @@ class ChatServer:
             self.host_entry.config(state=tk.DISABLED)
             self.port_entry.config(state=tk.DISABLED)
 
+            # Enable 'Kick' and 'Ban' buttons
+            self.kick_button.config(state=tk.NORMAL)
+            self.ban_button.config(state=tk.NORMAL)
+
             self.server_running = True
 
             # Start a thread to continuously listen for connections
@@ -235,7 +364,7 @@ class ChatServer:
         
         # Close all connected sockets
         for user in self.users:
-            user.socket.close()
+            user.client.close()
         
         self.users.clear()
 
@@ -255,6 +384,10 @@ class ChatServer:
         # Enable 'Host' and 'Port' entries
         self.host_entry.config(state=tk.NORMAL)
         self.port_entry.config(state=tk.NORMAL)
+        
+        # Disable 'Kick' and 'Ban' buttons
+        self.kick_button.config(state=tk.DISABLED)
+        self.ban_button.config(state=tk.DISABLED)
 
         # Clear all messages printed in chat
         self.chat_area.config(state=tk.NORMAL) # Enable editing first
@@ -279,10 +412,10 @@ class ChatServer:
         self.chat_area.see(tk.END)  # Auto-scroll to the new message
         self.chat_area.config(state=tk.DISABLED)  # Prevent user edits
         
-    def announce(self, event=None):
-        message = self.message_var.get() # Retrieve what the host typed in the message box
+    def send_message(self, event=None):
+        message = self.message_var.get().strip() # Retrieve what the host typed in the message box
         if not message:
-            return  # Why send an empty message???
+            return
 
         self.display_message(f'[SERVER] {message}') # Log the message to the chat
         self.broadcast(encode_packet({'type': 'server_message', 'content': message})) # Broadcast the message to every client

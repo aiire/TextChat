@@ -1,20 +1,38 @@
 import json
-import socket
+import os
+from typing import Optional, Union
 
-DEFAULT_HOST = 'localhost' # The default host is the host's device
+DEFAULT_HOST = 'localhost'
 DEFAULT_PORT = 5000
 
-class User:
-    def __init__(self, username: str, client_socket: socket.socket, address: tuple[str, int]):
-        self.nickname = username
-        self.socket = client_socket
-        self.address = address
-        self.is_authenticated = False
-
-    def __repr__(self):
-        return f"User(username={self.nickname}, address={self.address}, authenticated={self.is_authenticated})"
-
-def encode_packet(data):
+def encode_packet(data) -> bytes:
     return json.dumps(data).encode()
 
+def decode_packet(packet: bytes) -> Optional[Union[dict, list]]:
+    try:
+        data = json.loads(packet.decode())
+        return data
+    except json.JSONDecodeError:
+        return None
+    
+def write_file(path, data):
+    """Writes data to a JSON file safely."""
+    try:
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Error writing to file {path}: {e}")
+
+def read_file(path, default_value={}):
+    """Reads data from a JSON file. If the file doesn't exist, creates it with a default value."""
+    if not os.path.exists(path):
+        write_file(path, default_value)  # Create file with default value
+        return default_value
+
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Error reading file {path}: {e}")
+        return default_value  # Return default if file is corrupt
 
