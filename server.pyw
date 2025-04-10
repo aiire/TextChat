@@ -4,7 +4,8 @@ import tkinter as tk
 from tkinter import scrolledtext, simpledialog, messagebox, ttk
 import json
 import errno
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import time
 
 from common import *
 
@@ -17,7 +18,7 @@ class User:
     nickname: str
     client: socket.socket
     address: tuple[str, int]
-    messages_sent: int = 0
+    message_timestamps: list[float] = field(default_factory=list)
 
     # A users unique identifier determined by their nickname and IP address
     @property
@@ -25,10 +26,6 @@ class User:
         # Combine the hashes of the nickname and the IP
         return get_user_id(self.address, self.nickname)
     
-    @property
-    def full_name(self):
-        return f'{self.nickname} ({self.id})'
-
 
 class ChatServer:
     def __init__(self, master: tk.Tk):
@@ -94,6 +91,10 @@ class ChatServer:
 
         # Connect the listbox to the scrollbar
         self.user_listbox.config(yscrollcommand=scrollbar.set)
+        self.user_listbox.bind("<<ListboxSelect>>", self.on_user_select)
+
+        # Store the selected user, if any
+        self.selected_user = None
 
         # Added functionality for kicking disruptive users
         self.kick_button = tk.Button(left_frame, text='Kick', command=self.kick_user)
@@ -109,16 +110,17 @@ class ChatServer:
         self.chat_area.pack(fill=tk.BOTH, pady=(0, 10), expand=True)
 
         # Frame to hold the message entry and send button
-        self.message_frame = tk.Frame(right_frame)
-        self.message_frame.pack(fill=tk.BOTH, pady=(0, 10))
+        message_frame = tk.Frame(right_frame)
+        message_frame.pack(fill=tk.BOTH, pady=(0, 10))
         self.message_var = tk.StringVar(master)  # Changed from IntVar to StringVar for text input
-        self.message_entry = tk.Entry(self.message_frame, textvariable=self.message_var, width=60)
+        self.message_var.trace_add('write', self.on_message_typed)
+        self.message_entry = tk.Entry(message_frame, textvariable=self.message_var, width=60)
         self.message_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.message_entry.config(state=tk.DISABLED)
         self.message_entry.bind('<Return>', self.send_message)
 
         # Send Button
-        self.send_button = tk.Button(self.message_frame, text='Send', command=self.send_message)
+        self.send_button = tk.Button(message_frame, text='Send', command=self.send_message)
         self.send_button.pack(side=tk.RIGHT, padx=(5, 0))
         self.send_button.config(state=tk.DISABLED)
     
@@ -143,7 +145,7 @@ class ChatServer:
                 client, address = self.server.accept()
                 # self.display_message(f'Connected to {address}')
                 
-                # The client will (presumably) send a packet saying the user is requesting to join the chat room
+                # The client will send a packet saying the user is requesting to join the chat room
                 initial_message = decode_packet(client.recv(1024))
                 
                 # The incoming data could not be parsed
@@ -224,33 +226,61 @@ class ChatServer:
         except ValueError:
             pass  # for wtv reason this user's nickname is not listed
 
+    
+    # Executes when the host selects a user in the user list 
+    def on_user_select(self, event=None):
+        selection = self.user_listbox.curselection()
+
+        # If there is no user selected, disable moderation buttons
+        if not selection:
+            self.kick_button.config(state=tk.DISABLED)
+            self.ban_button.config(state=tk.DISABLED)
+            self.selected_user = None
+            return
+
+        index = selection[0]
+        self.selected_user = self.users[int(index)]
+        
+        self.kick_button.config(state=tk.NORMAL)
+        self.ban_button.config(state=tk.NORMAL)
+
+    def on_message_typed(self, *args):
+        content = self.message_var.get().strip()
+        if not content:
+            self.send_button.config(state=tk.DISABLED)
+        else:
+            self.send_button.config(state=tk.NORMAL)
+        
     def kick_user(self):
-        indices = self.user_listbox.curselection() # Get whatever user nick is selected
-        if not indices:
+        if not self.selected_user:
             return
         
-        for index in indices:
-            target_user = self.users[index]
-            
-            self.display_message(f'Kicked {target_user.nickname}.')
-            self.send_packet(target_user, encode_packet({'type': 'user_kicked', 'reason': 'You were kicked by an admin.'}))
-            self.remove_user(target_user)
+        target_user = self.selected_user
+        
+        self.display_message(f'Kicked {target_user.nickname}.')
+        self.send_packet(target_user, encode_packet({'type': 'user_kicked', 'reason': 'Kicked by an admin.'}))
+        self.remove_user(target_user)
+
+        self.selected_user = None
+        self.kick_button.config(state=tk.DISABLED)
+        self.ban_button.config(state=tk.DISABLED)
 
     def ban_user(self):
-        indices = self.user_listbox.curselection() # Get whatever user nick is selected
-        if not indices:
+        if not self.selected_user:
             return
         
-        for index in indices:
-            target_user: User = self.users[index]
+        target_user = self.selected_user
             
-            self.display_message(f'Banned user {target_user.full_name}.')
-            ban_reason = 'You were banned by an admin.'
-            self.send_packet(target_user, encode_packet({'type': 'user_banned', 'reason': ban_reason}))
-            self.bans[target_user.id] = {'reason': ban_reason}
-            write_file('bans.json', self.bans)
-            self.remove_user(target_user)
+        self.display_message(f'Banned {target_user.nickname}.')
+        reason = 'Banned by an admin.'
+        self.send_packet(target_user, encode_packet({'type': 'user_banned', 'reason': reason}))
+        self.remove_user(target_user)
+        self.bans[target_user.id] = {'reason': reason}
+        write_file('bans.json', self.bans)
 
+        self.selected_user = None
+        self.kick_button.config(state=tk.DISABLED)
+        self.ban_button.config(state=tk.DISABLED)
 
     # Handles incoming messages from a client. Runs on its own work thread for each client
     def handle_client(self, user: User):
@@ -267,7 +297,7 @@ class ChatServer:
                     # Print the received message to the server chat window
                     sender = packet['sender']['nick']
                     content = packet['content']
-                    self.display_message(f'<{sender}> {content}')
+                    self.display_message(f'({sender}) {content}')
 
                     # Echo the received message to other clients
                     self.broadcast(encode_packet(packet))
@@ -320,17 +350,13 @@ class ChatServer:
             self.stop_button.config(state=tk.NORMAL)
 
             # Enable 'Send' button and the message entry
-            self.send_button.config(state=tk.NORMAL)
+            # self.send_button.config(state=tk.NORMAL)
             self.message_entry.config(state=tk.NORMAL)
 
             # Disable 'Host' and 'Port' entries
             self.host_entry.config(state=tk.DISABLED)
             self.port_entry.config(state=tk.DISABLED)
-
-            # Enable 'Kick' and 'Ban' buttons
-            self.kick_button.config(state=tk.NORMAL)
-            self.ban_button.config(state=tk.NORMAL)
-
+            
             self.server_running = True
 
             # Start a thread to continuously listen for connections

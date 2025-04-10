@@ -12,6 +12,19 @@ class ChatClient:
     def __init__(self, master: tk.Tk):
         self.master = master # Store the root widget
         self.master.title('Chat Client')  # Set the title of the GUI window to 'Chat Client'
+        
+        self.setup_gui()
+
+        self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.client_running = False
+        self.client_id = None
+        self.nickname = None
+        # self.ask_nick()
+
+        self.blocked_users = read_file('blocked_users.json', [])
+        
+    def setup_gui(self):
+        master = self.master
 
         main_frame = tk.Frame(master)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -22,22 +35,27 @@ class ChatClient:
         right_frame = tk.Frame(main_frame)
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)  # Chat expands to fill space
 
+        # Register the validation function for number-only text entries
+        validate_number = master.register(lambda P: P.isdigit() or P == '')
+
         # Allow the user to specify the chat room hostname
-        self.host_frame = tk.Frame(left_frame)
-        self.host_frame.pack(anchor='w', pady=(0, 10))
-        self.host_label = tk.Label(self.host_frame, text='Host')
-        self.host_label.pack(side=tk.LEFT)
-        self.host_var = tk.StringVar(master, value=DEFAULT_HOST)
-        self.host_entry = tk.Entry(self.host_frame, textvariable=self.host_var, width=20)
+        host_frame = tk.Frame(left_frame)
+        host_frame.pack(anchor='w', pady=(0, 10))
+        host_label = tk.Label(host_frame, text='Host')
+        host_label.pack(side=tk.LEFT)
+        self.host_var = tk.StringVar(master, name='SERVER_HOST', value=DEFAULT_HOST)
+        self.host_var.trace_add('write', self.on_address_change)  # Triggers when text changes
+        self.host_entry = tk.Entry(host_frame, textvariable=self.host_var, width=20)
         self.host_entry.pack(side=tk.LEFT, padx=(5, 0))  # Spacing between label and entry
 
         # Allow the user to enter the port 
-        self.port_frame = tk.Frame(left_frame)
-        self.port_frame.pack(anchor='w', pady=(0, 10))
-        self.port_label = tk.Label(self.port_frame, text='Port')
-        self.port_label.pack(side=tk.LEFT)
-        self.port_var = tk.IntVar(master, value=DEFAULT_PORT)
-        self.port_entry = tk.Entry(self.port_frame, textvariable=self.port_var, width=20)
+        port_frame = tk.Frame(left_frame)
+        port_frame.pack(anchor='w', pady=(0, 10))
+        port_label = tk.Label(port_frame, text='Port')
+        port_label.pack(side=tk.LEFT)
+        self.port_var = tk.IntVar(master, name='SERVER_PORT', value=DEFAULT_PORT)
+        self.port_var.trace_add('write', self.on_address_change)  # Triggers when text changes
+        self.port_entry = tk.Entry(port_frame, validate='key', validatecommand=(validate_number, '%P'), textvariable=self.port_var, width=20)
         self.port_entry.pack(side=tk.LEFT, padx=(5, 0))
 
         # Create a frame for the buttons to keep them on the same line
@@ -59,8 +77,8 @@ class ChatClient:
         list_frame.pack(anchor='w', pady=(0, 10))
 
         # Label remains above the list_frame
-        self.user_list_label = tk.Label(list_frame, text='Users Online')
-        self.user_list_label.pack(anchor='w', pady=(0, 5))
+        user_list_label = tk.Label(list_frame, text='Users Online')
+        user_list_label.pack(anchor='w', pady=(0, 5))
 
         # Create the listbox inside the frame
         self.user_listbox = tk.Listbox(list_frame, width=25, height=12)
@@ -71,7 +89,8 @@ class ChatClient:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Connect the listbox to the scrollbar
-        self.user_listbox.config(yscrollcommand=scrollbar.set) 
+        self.user_listbox.config(yscrollcommand=scrollbar.set)
+        self.user_listbox.bind("<<ListboxSelect>>", self.on_user_select)
 
         # Let the user block annoying users
         self.block_button = tk.Button(left_frame, text='Block', command=self.block_user)
@@ -93,27 +112,20 @@ class ChatClient:
         self.chat_area.pack(fill=tk.BOTH, pady=(0, 10), expand=True)
 
         # Frame to hold the message entry and send button
-        self.message_frame = tk.Frame(right_frame)
-        self.message_frame.pack(fill=tk.BOTH, pady=(0, 10))
+        message_frame = tk.Frame(right_frame)
+        message_frame.pack(fill=tk.BOTH, pady=(0, 10))
         self.message_var = tk.StringVar(master)  # Changed from IntVar to StringVar for text input
-        self.message_entry = tk.Entry(self.message_frame, textvariable=self.message_var, width=60)
+        self.message_var.trace_add('write', self.on_message_typed)
+        self.message_entry = tk.Entry(message_frame, textvariable=self.message_var, width=60)
         self.message_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.message_entry.config(state=tk.DISABLED)
         self.message_entry.bind('<Return>', self.send_message)
 
         # Send Button
-        self.send_button = tk.Button(self.message_frame, text='Send', command=self.send_message)
+        self.send_button = tk.Button(message_frame, text='Send', command=self.send_message)
         self.send_button.pack(side=tk.RIGHT, padx=(5, 0))
         self.send_button.config(state=tk.DISABLED)
 
-        self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client_running = False
-        self.client_id = None
-        self.nickname = None
-        # self.ask_nick()
-
-        self.blocked_users = read_file('blocked_users.json', [])
-        
     # Ask user for a nickname
     def ask_nick(self):
         while not self.nickname:
@@ -148,7 +160,7 @@ class ChatClient:
 
             if response_type == 'connection_ack':
                 self.client_id = response.get('your_id')
-                self.display_message(f"Established connection with {host}:{port}")
+                self.display_message(f'Established connection with {host}:{port}')
                 self.send_packet(encode_packet({'type': 'user_joined', 'nick': self.nickname}))
 
             elif response_type == 'connection_error':
@@ -166,16 +178,16 @@ class ChatClient:
                 messagebox.showwarning('Connection Error', f'Failed to connect to server: {reason}')
                 return
             else:
-                raise Exception(f"Received invalid packet of type '{response_type}'.")
+                raise Exception(f'Received invalid packet of type "{response_type}".')
 
             # Update UI configuration in one block after successful connection
             self.join_button.config(state=tk.DISABLED)
             self.leave_button.config(state=tk.NORMAL)
-            self.send_button.config(state=tk.NORMAL)
+            # self.send_button.config(state=tk.NORMAL)
             self.message_entry.config(state=tk.NORMAL)
-            self.block_button.config(state=tk.NORMAL)
-            self.unblock_button.config(state=tk.NORMAL)
-            self.report_button.config(state=tk.NORMAL)
+            # self.block_button.config(state=tk.NORMAL)
+            # self.unblock_button.config(state=tk.NORMAL)
+            # self.report_button.config(state=tk.NORMAL)
             self.host_entry.config(state=tk.DISABLED)
             self.port_entry.config(state=tk.DISABLED)
             self.client_running = True
@@ -238,63 +250,107 @@ class ChatClient:
         if reason:
             self.display_message(f'Connection Lost: {reason}')
 
-    def block_user(self):
-        indices = self.user_listbox.curselection()
+    # Executes when the host selects a user in the user list 
+    def on_user_select(self, event=None):
+        selection = self.user_listbox.curselection()
 
-        # No one has been selected to block so don't continue
-        if not indices:
+        # If there is no user selected, disable user safety buttons
+        if not selection:
+            self.block_button.config(state=tk.DISABLED)
+            self.unblock_button.config(state=tk.DISABLED)
+            self.report_button.config(state=tk.DISABLED)
+            self.selected_user = None
+            return
+
+        index = selection[0]
+        self.selected_user = self.users_online[index]
+        user_id = self.selected_user['id']
+
+        # If the user selects themselves, disable all buttons
+        if user_id == self.client_id:
+            self.block_button.config(state=tk.DISABLED)
+            self.unblock_button.config(state=tk.DISABLED)
+            self.report_button.config(state=tk.DISABLED)
+
+        # If the user is already blocked, enable the 'Unblock' button
+        elif self.is_user_blocked(user_id):
+            self.block_button.config(state=tk.DISABLED)
+            self.unblock_button.config(state=tk.NORMAL)
+            self.report_button.config(state=tk.NORMAL)
+        # If the user is NOT blocked, enable the 'Block' button
+        else:
+            self.block_button.config(state=tk.NORMAL)
+            self.unblock_button.config(state=tk.DISABLED)
+            self.report_button.config(state=tk.NORMAL)
+
+    def on_address_change(self, *args):
+        host = self.host_var.get().strip()
+        port = self.port_entry.get().strip()
+
+        if not host or not port:
+            self.join_button.config(state=tk.DISABLED)
+        else:
+            self.join_button.config(state=tk.NORMAL)
+
+    def on_message_typed(self, *args):
+        content = self.message_var.get().strip()
+        if not content:
+            self.send_button.config(state=tk.DISABLED)
+        else:
+            self.send_button.config(state=tk.NORMAL)
+
+    def block_user(self):
+        # No one has been selected to block
+        if not self.selected_user:
             return
         
-        # Only allow blocking one person at a time
-        selected_user_index = indices[0]
-        user_info = self.users_online[selected_user_index]
+        user_info = self.selected_user
         user_id = user_info.get('id')
         user_nick = user_info.get('nick')
         
-        # Could not find user of that ID.
-        # You can't block yourself (duh)
+        # Could not find user of that ID. You can't block yourself (duh)
         if not user_id or not user_nick or user_id == self.client_id:
             self.display_message('Unable to block this user.')
             return
         
+        # This should never happen, but I'll leave this safety check in anyways
         if self.is_user_blocked(user_id):
             self.display_message(f'{user_nick} is already blocked.')
             return
         
-        self.display_message(f'Blocked {user_nick}. You will no longer recieve their messages.')
+        self.display_message(f'Blocked {user_nick}. Messages from this user will be suppressed.')
         self.blocked_users.append(user_id)
         write_file('blocked_users.json', self.blocked_users)
 
+        self.block_button.config(state=tk.DISABLED)
+        self.unblock_button.config(state=tk.NORMAL)
+
         
     def unblock_user(self):
-        indices = self.user_listbox.curselection()
-
-        # No one has been selected to unblock so don't continue
-        if not indices:
+        # No one has been selected to unblock
+        if not self.selected_user:
             return
         
-        # Only allow unblocking one person at a time
-        selected_user_index = indices[0]
-        
-        # Only allow blocking one person at a time
-        selected_user_index = indices[0]
-        user_info = self.users_online[selected_user_index]
+        user_info = self.selected_user
         user_id = user_info.get('id')
         user_nick = user_info.get('nick')
         
-        # Could not find user of that ID.
-        # You can't block yourself (duh)
+        # Could not find user of that ID. You can't unblock yourself (let alone block yourself in the first place)
         if not user_id or not user_nick or user_id == self.client_id:
-            self.display_message('Unable to unblock this user.')
+            self.display_message('Unable to block this user.')
             return
         
+        # This should never happen, but I'll leave this safety check in anyways
         if not self.is_user_blocked(user_id):
             self.display_message(f'{user_nick} is not blocked.')
             return
         
-        self.display_message(f'Unblocked {user_nick}. You will now see their messages')
+        self.display_message(f'Unblocked {user_nick}. Messages from this user will be visible again.')
         self.blocked_users.remove(user_id)
         write_file('blocked_users.json', self.blocked_users)
+        
+        self.block_button.config(state=tk.NORMAL)
+        self.unblock_button.config(state=tk.DISABLED)
 
     # Sends the server a user report
     def report_user(self):
@@ -322,6 +378,7 @@ class ChatClient:
                 packet = decode_packet(self.client.recv(1024))  # Parse the incoming JSON data
                 packet_type = packet['type']
 
+                # A user joined or left the chat room
                 if packet_type in ['user_joined', 'user_leave']:
                     # Update the user list box according to who is currently online
                     self.update_user_list(packet['users'])
@@ -333,6 +390,7 @@ class ChatClient:
                     else:
                         self.display_message(f'{user_nick} left the chat.')
 
+                # A user sent a message
                 elif packet_type == 'user_message':
                     # Print the received message to the user's chat window
                     sender = packet['sender']
@@ -342,15 +400,19 @@ class ChatClient:
                         continue
                     
                     content = packet['content']
-                    self.display_message(f'<{sender['nick']}> {content}')
+                    self.display_message(f'({sender['nick']}) {content}')
+                
+                # The server sent a message
                 elif packet_type == 'server_message':
                     # Print the received message to the user's chat window
                     content = packet['content']
                     self.display_message(f'[SERVER] {content}')
+                # The server is shutting down
                 elif packet_type == 'server_closed':
                     # Disconnect from the server now that it's closing
                     self.stop_client(reason='Server closed.')
                     break
+                # You were kicked or banned
                 elif packet_type in ['user_kicked', 'user_banned']:
                     # You were kicked by an operator
                     reason = packet['reason']
@@ -358,6 +420,10 @@ class ChatClient:
                     self.stop_client()
                     messagebox.showwarning(punishment.title(), message=f'You have been {punishment} from this server.\nReason: {reason}')
                     break
+                # The server sent an error/warning message
+                elif packet_type in ['error', 'warning']:
+                    self.display_message(f'{packet_type.title()}: {packet['message']}')
+                # Other cases
                 else:
                     # This should never happen but I'm including a safety check just incase I do an oopsy
                     self.display_message(f'[SERVER] {packet}')
@@ -365,7 +431,7 @@ class ChatClient:
             except ConnectionResetError:
                 self.stop_client(reason='Server closed.')
                 break
-            except (ConnectionAbortedError):
+            except ConnectionAbortedError:
                 self.stop_client()
                 break
             except Exception as e:
@@ -386,7 +452,7 @@ class ChatClient:
 
     # Sends the message from the text entry widget to the server
     def send_message(self, event=None):
-        message = self.message_entry.get()
+        message = self.message_entry.get().strip()
         if message:
             self.send_packet(encode_packet({'type': 'user_message', 'sender': {'nick': self.nickname, 'id': self.client_id}, 'content': message}))
             self.message_entry.delete(0, tk.END)
