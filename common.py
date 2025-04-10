@@ -45,6 +45,5 @@ def read_file(path, default_value={}) -> Union[dict, list]:
 
 def generate_id(*values: Any, separator=':', hash_length=16):
     raw_string = separator.join(str(value) for value in values)
-    print(raw_string)
     hash_object = hashlib.sha256(raw_string.encode())
     return hash_object.hexdigest()[:hash_length]
