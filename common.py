@@ -1,9 +1,12 @@
 import json
 import os
-from typing import Optional, Union
+from typing import Optional, Union, Any
+import hashlib
 
 DEFAULT_HOST = 'localhost'
 DEFAULT_PORT = 5000
+
+MAX_NICKNAME_LENGTH = 24
 
 # Encodes data into a JSON object and encodes it into raw bytes
 # to be sent through a network stream
@@ -27,7 +30,7 @@ def write_file(path, data):
         print(f"Error writing to file {path}: {e}")
 
 # Reads data from a JSON file. If the file doesn't exist, creates it with a default value
-def read_file(path, default_value={}):
+def read_file(path, default_value={}) -> Union[dict, list]:
     if not os.path.exists(path):
         write_file(path, default_value)  # Create file with default value
         return default_value
@@ -39,3 +42,9 @@ def read_file(path, default_value={}):
         print(f"Error reading file {path}: {e}")
         return default_value  # Return default if file is corrupt
 
+
+def generate_id(*values: Any, separator=':', hash_length=16):
+    raw_string = separator.join(str(value) for value in values)
+    print(raw_string)
+    hash_object = hashlib.sha256(raw_string.encode())
+    return hash_object.hexdigest()[:hash_length]
